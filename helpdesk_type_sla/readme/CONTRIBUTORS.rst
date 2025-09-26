@@ -3,3 +3,5 @@
   - Bhavesh Heliconia
 - [Dixmit](https://www.dixmit.com)
   - Enric Tobella
+- [Trobz](https://www.trobz.com)
+  - Do Anh Duy \<duyda@trobz.com\>
