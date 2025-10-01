@@ -3,6 +3,7 @@
 
 import logging
 
+from openupgradelib import openupgrade
 from psycopg2.sql import SQL, Identifier
 
 from odoo import SUPERUSER_ID, api
@@ -88,12 +89,6 @@ def _ensure_mail_tracking_index(cr):
         _logger.info("Created index mail_tracking_email_mail_id_index.")
 
 
-def _is_module_installed(cr, module_name):
-    cr.execute("SELECT state FROM ir_module_module WHERE name = %s", (module_name,))
-    result = cr.fetchone()
-    return bool(result and result[0] == "installed")
-
-
 def _drop_related_constraint(cr, table_name, constraint_name):
     definition = sql.constraint_definition(cr, table_name, constraint_name)
     if definition:
@@ -153,7 +148,7 @@ def _cleanup_helpdesk_references(env, cr):
 
 def pre_init_hook(cr):
     module = MODULE_TO_UNINSTALL[0]
-    if not _is_module_installed(cr, module):
+    if not openupgrade.is_module_installed(cr, module):
         _logger.info("Skipping cloning: module '%s' is not installed.", module)
         return
 
@@ -167,7 +162,7 @@ def pre_init_hook(cr):
 def post_init_hook(cr, registry):
     env = api.Environment(cr, SUPERUSER_ID, {})
     module = MODULE_TO_UNINSTALL[0]
-    if not _is_module_installed(cr, module):
+    if not openupgrade.is_module_installed(cr, module):
         _logger.info("Skipping cleanup: module '%s' is not installed.", module)
         return
 

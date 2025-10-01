@@ -16,5 +16,8 @@
         "helpdesk_mgmt_sla",
         "helpdesk_mgmt_rating",
     ],
+    "external_dependencies": {
+        "python": ["openupgradelib"],
+    },
     "post_init_hook": "post_init_hook",
 }

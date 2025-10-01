@@ -4,6 +4,7 @@
 import logging
 from random import randint
 
+from openupgradelib import openupgrade_merge_records
 from psycopg2 import sql
 
 from odoo import SUPERUSER_ID, Command, api
@@ -326,6 +327,7 @@ def _migrate_helpdesk_stage(cr, env, lang, team_id_map, ee_tables):
             else [Command.clear()],
             "mail_template_id": mail_template_id,
             "closed": fold,
+            "fold": fold,
         }
         vals_list.append((stage_id, vals))
 
@@ -567,6 +569,94 @@ def _migrate_helpdesk_ticket(
     return ticket_id_map
 
 
+def merge_duplicate_records_from_data_import(env):
+    """
+    Merge duplicate helpdesk stages created during data import & module installation.
+    - Prefer keeping the stage with the highest ticket count.
+    - If equal ticket count, prefer the one WITHOUT xml_id.
+    """
+    stage_xml_ids = [
+        "helpdesk_mgmt.helpdesk_ticket_stage_new",
+        "helpdesk_mgmt.helpdesk_ticket_stage_in_progress",
+        "helpdesk_mgmt.helpdesk_ticket_stage_cancelled",
+    ]
+
+    Stage = env["helpdesk.ticket.stage"]
+    Ticket = env["helpdesk.ticket"]
+    IrModelData = env["ir.model.data"]
+    for xml_id in stage_xml_ids:
+        module_record = env.ref(xml_id, raise_if_not_found=False)
+        if not module_record:
+            continue
+
+        record_name = module_record.name
+        duplicates = Stage.search([("name", "=", record_name)])
+
+        if len(duplicates) > 1:
+            stage_with_counts = [
+                (stage, Ticket.search_count([("stage_id", "=", stage.id)]))
+                for stage in duplicates.filtered(lambda s: s.id != module_record.id)
+            ]
+            if not stage_with_counts:
+                continue
+
+            stage_with_counts.sort(key=lambda x: x[1], reverse=True)
+            target_record = stage_with_counts[0][0]
+            xid = IrModelData.search(
+                [
+                    ("module", "=", xml_id.split(".")[0]),
+                    ("name", "=", xml_id.split(".")[1]),
+                ]
+            )
+            if xid and xid.res_id != target_record.id:
+                logger.info(
+                    "Updating xml_id '%s' to point to record (ID %s)",
+                    xml_id,
+                    target_record.id,
+                )
+                try:
+                    xid.write({"res_id": target_record.id})
+
+                    logger.info(
+                        "Merging duplicate stages for '%s': target=%s (tickets=%d) <- merge=%s",
+                        record_name,
+                        target_record.id,
+                        stage_with_counts[0][1],
+                        module_record.id,
+                    )
+                    openupgrade_merge_records.merge_records(
+                        env=env,
+                        model_name=Stage._name,
+                        record_ids=module_record.ids,
+                        target_record_id=target_record.id,
+                        method="orm",
+                    )
+
+                    logger.info(
+                        "Stage '%s' merged successfully. Kept ID=%s",
+                        record_name,
+                        target_record.id,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Merge failed for %s. Falling back to XMLID reassignment only.",
+                        xml_id,
+                    )
+                    # Remove XMLID association and delete duplicate
+                    xid.write({"res_id": False})
+                    module_record.unlink()  # delete duplicate was imported from depend module
+
+                    # Finally reassign xmld to target_record
+                    xid.write({"res_id": target_record.id})
+                    logger.info(
+                        "Fallback complete: Reassigned xml_id %s to (ID %s)",
+                        xml_id,
+                        target_record.id,
+                    )
+                except Exception:
+                    logger.exception(f"Unexpected error during merge of {xml_id}")
+
+
 def post_init_hook(cr, registry):
     env = api.Environment(cr, SUPERUSER_ID, {})
     lang = get_lang(env).code or env.lang
@@ -592,6 +682,8 @@ def post_init_hook(cr, registry):
         )
 
         logger.info("Migration completed successfully.")
+
+        merge_duplicate_records_from_data_import(env)
 
         # Clear caches to avoid stale data issues
         env.invalidate_all()

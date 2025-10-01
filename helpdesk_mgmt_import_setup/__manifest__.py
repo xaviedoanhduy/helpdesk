@@ -13,6 +13,9 @@
     "author": "Kencove, Odoo Community Association (OCA)",
     "website": "https://github.com/OCA/helpdesk",
     "depends": [],
+    "external_dependencies": {
+        "python": ["openupgradelib"],
+    },
     "pre_init_hook": "pre_init_hook",
     "post_init_hook": "post_init_hook",
 }
