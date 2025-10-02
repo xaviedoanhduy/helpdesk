@@ -319,7 +319,7 @@ def _migrate_helpdesk_stage(cr, env, lang, team_id_map, ee_tables):
 
         vals = {
             "name": name,
-            "description": description or "",
+            "description": description if description else False,
             "sequence": sequence or _next_sequence(env, HelpdeskTicketStage._name),
             "active": active,
             "team_ids": [Command.set(new_team_ids)]
