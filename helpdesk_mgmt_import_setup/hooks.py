@@ -180,3 +180,23 @@ def post_init_hook(cr, registry):
         _uninstall_modules(env)
     except Exception as e:
         _logger.error("Error post_init_hook: %s", str(e))
+
+
+def uninstall_hook(cr, registry):
+    _logger.info("Running uninstall_hook: cleaning up cloned tables...")
+
+    for _, cloned_name in TABLE_TO_CLONES:
+        if table_exists(cr, cloned_name):
+            try:
+                _logger.info("Dropping cloned table: %s", cloned_name)
+                cr.execute(
+                    SQL("DROP TABLE IF EXISTS {} CASCADE").format(
+                        Identifier(cloned_name)
+                    )
+                )
+            except Exception as e:
+                _logger.error("Failed to drop cloned table %s: %s", cloned_name, str(e))
+        else:
+            _logger.debug("Cloned table %s does not exist, skipping.", cloned_name)
+
+    _logger.info("Cleanup after uninstall completed.")

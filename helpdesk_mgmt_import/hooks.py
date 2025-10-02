@@ -693,3 +693,19 @@ def post_init_hook(cr, registry):
     except Exception as e:
         logger.exception(f"Error in post_init_hook: {e}")
         raise
+
+
+def uninstall_hook(cr, registry):
+    env = api.Environment(cr, SUPERUSER_ID, {})
+    logger.info("Running uninstall_hook: uninstall setup module...")
+    setup_module = env["ir.module.module"].search(
+        [
+            ("name", "=", "helpdesk_mgmt_import_setup"),
+            ("state", "=", "installed"),
+        ]
+    )
+    if setup_module:
+        logger.info("Triggering uninstall for: 'helpdesk_mgmt_import_setup'")
+        setup_module.sudo().button_uninstall()
+    else:
+        logger.info("No 'helpdesk_mgmt_import_setup' modules currently installed.")
