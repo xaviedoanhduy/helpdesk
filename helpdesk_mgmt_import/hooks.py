@@ -467,7 +467,8 @@ def _migrate_helpdesk_ticket(
 
     batch_size = 1000
     ticket_id_map = {}
-
+    helpdesk_ticket_model_name = HelpdeskTicket._name
+    archive_model_name = "archive.helpdesk"
     for offset in range(0, total, batch_size):
         end = min(offset + batch_size, total)
         logger.info(
@@ -489,7 +490,6 @@ def _migrate_helpdesk_ticket(
         )
         ticket_rows = cr.fetchall()
         ticket_ids_batch = [row[0] for row in ticket_rows]
-
         tag_map = {}
         migrate_rel_table = EE_HELPDESK_TAG_HELPDESK_TICKET_REL_TABLE
         if migrate_rel_table in ee_tables and ticket_ids_batch:
@@ -557,10 +557,91 @@ def _migrate_helpdesk_ticket(
             }
 
             try:
-                new_ticket = HelpdeskTicket.with_context(skip_tracking=True).create(
+                new_ticket = HelpdeskTicket.with_context(tracking_disable=True).create(
                     vals
                 )
                 ticket_id_map[old_id] = new_ticket
+                new_ticket_id = new_ticket.id
+
+                # 1. Reassign mail.message
+                query = sql.SQL(
+                    """
+                    UPDATE {table}
+                    SET res_id = %s, model = %s
+                    WHERE old_res_id = %s AND model = %s
+                """
+                ).format(table=sql.Identifier("mail_message"))
+                cr.execute(
+                    query,
+                    (
+                        new_ticket_id,
+                        helpdesk_ticket_model_name,
+                        old_id,
+                        archive_model_name,
+                    ),
+                )
+
+                # 2. Reassign ir.attachment
+                query = sql.SQL(
+                    """
+                    UPDATE {table}
+                    SET res_id = %s, res_model = %s
+                    WHERE old_res_id = %s AND res_model = %s
+                """
+                ).format(table=sql.Identifier("ir_attachment"))
+                cr.execute(
+                    query,
+                    (
+                        new_ticket_id,
+                        helpdesk_ticket_model_name,
+                        old_id,
+                        archive_model_name,
+                    ),
+                )
+
+                # 3. Safely reassign mail.followers (avoiding duplicates)
+                query = sql.SQL(
+                    """
+                    SELECT id, partner_id FROM {table}
+                    WHERE old_res_id = %s AND res_model = %s
+                """
+                ).format(table=sql.Identifier("mail_followers"))
+                cr.execute(query, (old_id, archive_model_name))
+                followers_to_update = cr.fetchall()
+
+                if followers_to_update:
+                    query = sql.SQL(
+                        """
+                        SELECT partner_id FROM {table}
+                        WHERE res_id = %s AND res_model = %s
+                    """
+                    ).format(table=sql.Identifier("mail_followers"))
+                    cr.execute(query, (new_ticket_id, helpdesk_ticket_model_name))
+                    existing_partners = {row[0] for row in cr.fetchall()}
+
+                    follower_ids_to_update = []
+                    for fol_id, partner_id in followers_to_update:
+                        if partner_id not in existing_partners:
+                            follower_ids_to_update.append(fol_id)
+                            existing_partners.add(partner_id)
+
+                    if follower_ids_to_update:
+                        query = sql.SQL(
+                            """
+                            UPDATE {table}
+                            SET res_id = %s, res_model = %s
+                            WHERE id = ANY(%s)
+                        """
+                        ).format(table=sql.Identifier("mail_followers"))
+                        cr.execute(
+                            query,
+                            (
+                                new_ticket_id,
+                                helpdesk_ticket_model_name,
+                                follower_ids_to_update,
+                            ),
+                        )
+
             except Exception as ex:
                 logger.exception(f"Error creating ticket '{name}' (ID: {old_id}): {ex}")
                 continue
@@ -657,6 +738,28 @@ def merge_duplicate_records_from_data_import(env):
                     logger.exception(f"Unexpected error during merge of {xml_id}")
 
 
+def unlink_all_archive_helpdesk_data(env):
+    archive_messages = env["mail.message"].search(
+        [
+            ("model", "=", "archive.helpdesk"),
+        ]
+    )
+    logger.info(
+        "Unlink mail.massage with model is archive.helpdesk %s", len(archive_messages)
+    )
+    archive_messages.unlink()
+    archive_followers = env["mail.followers"].search(
+        [
+            ("res_model", "=", "archive.helpdesk"),
+        ]
+    )
+    logger.info(
+        "Unlink mail.followers with model is archive.helpdesk %s",
+        len(archive_followers),
+    )
+    archive_followers.unlink()
+
+
 def post_init_hook(cr, registry):
     env = api.Environment(cr, SUPERUSER_ID, {})
     lang = get_lang(env).code or env.lang
@@ -680,15 +783,15 @@ def post_init_hook(cr, registry):
         _migrate_helpdesk_ticket(
             cr, env, lang, tag_id_map, type_id_map, team_id_map, stage_id_map, ee_tables
         )
-
-        logger.info("Migration completed successfully.")
-
         merge_duplicate_records_from_data_import(env)
+        unlink_all_archive_helpdesk_data(env)
 
         # Clear caches to avoid stale data issues
+        logger.info("Caches invalidated and registry cleared after migration.")
         env.invalidate_all()
         env.registry.clear_caches()
-        logger.info("Caches invalidated and registry cleared after migration.")
+
+        logger.info("Migration completed successfully.")
 
     except Exception as e:
         logger.exception(f"Error in post_init_hook: {e}")
